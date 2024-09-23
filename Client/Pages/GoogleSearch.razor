@@ -1,0 +1,152 @@
+﻿@page "/"
+@using GoogleSearchApp.Shared.Models
+@using System.Net.Http
+@using System.Net.Http.Json
+@using System.Text.Json
+@using System.Xml.Serialization
+@using Microsoft.AspNetCore.Components.Web
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<h1 class="text-center mt-5">Vyhledávač Výsledků z Google</h1>
+
+<div class="container mt-4">
+    <div class="input-group mb-3">
+        <input value="@searchQuery" @oninput="e => searchQuery = e.Value.ToString()" class="form-control" placeholder="Zadejte hledaný výraz" @onkeydown="HandleKeyPress" />
+        <button class="btn btn-primary" @onclick="FetchResults">Vyhledat</button>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Načítání...</span>
+            </div>
+        </div>
+    }
+
+    @if (results != null && results.Count > 0)
+    {
+        <div class="mb-3 d-flex align-items-center">
+            <label for="formatSelect" class="form-label me-2 mb-0">Vyberte formát uložení:</label>
+            <select id="formatSelect" class="form-select w-auto me-2" @bind="selectedFormat">
+                <option value="json">JSON</option>
+                <option value="xml">XML</option>
+            </select>
+            <button class="btn btn-success" @onclick="SaveResults">Uložit výsledky</button>
+        </div>
+        <ul class="list-group">
+            @foreach (var item in results)
+            {
+                <li class="list-group-item">
+                    <h5><a href="@item.Link" target="_blank">@item.Title</a></h5>
+                    <p>@item.Snippet</p>
+                </li>
+            }
+        </ul>
+    }
+    else if (hasSearched && (results == null || results.Count == 0))
+    {
+        <div class="alert alert-warning" role="alert">
+            Nebyly nalezeny žádné výsledky pro dotaz "@searchQuery".
+        </div>
+    }
+</div>
+
+@code {
+    private string searchQuery= string.Empty;
+    private List<ResultItem> results = new();
+    private bool isLoading = false;
+    private bool hasSearched = false;
+    private string selectedFormat = "json";
+
+    private async Task FetchResults()
+    {
+        if (string.IsNullOrWhiteSpace(searchQuery))
+            return;
+
+        isLoading = true;
+        hasSearched = false;
+        results.Clear();
+
+        try
+        {
+            var url = $"api/Search?query={Uri.EscapeDataString(searchQuery)}";
+            var response = await Http.GetFromJsonAsync<GoogleSearchResponse>(url);
+            results = response.Items ?? new List<ResultItem>();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Chyba při získávání výsledků: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+            hasSearched = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SaveResults()
+    {
+        IDataSerializer serializer = DataSerializerFactory.CreateSerializer(selectedFormat);
+        var data = serializer.Serialize(results);
+        var fileName = $"results.{selectedFormat}";
+
+        var byteArray = System.Text.Encoding.UTF8.GetBytes(data);
+        using var streamRef = new DotNetStreamReference(new System.IO.MemoryStream(byteArray));
+        await JS.InvokeVoidAsync("downloadFileFromStream", fileName, streamRef);
+    }
+
+    private async Task HandleKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await FetchResults();
+        }
+    }
+
+    // Rozhraní pro serializaci dat
+    public interface IDataSerializer
+    {
+        string Serialize(List<ResultItem> results);
+    }
+
+    // Serializer pro JSON
+    public class JsonDataSerializer : IDataSerializer
+    {
+        public string Serialize(List<ResultItem> results)
+        {
+            return JsonSerializer.Serialize(results, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+        }
+    }
+
+    // Serializer pro XML
+    public class XmlDataSerializer : IDataSerializer
+    {
+        public string Serialize(List<ResultItem> results)
+        {
+            var xmlSerializer = new XmlSerializer(typeof(List<ResultItem>));
+            using var stringWriter = new System.IO.StringWriter();
+            xmlSerializer.Serialize(stringWriter, results);
+            return stringWriter.ToString();
+        }
+    }
+
+    // Factory pro vytváření serializerů
+    public static class DataSerializerFactory
+    {
+        public static IDataSerializer CreateSerializer(string format)
+        {
+            return format.ToLower() switch
+            {
+                "json" => new JsonDataSerializer(),
+                "xml" => new XmlDataSerializer(),
+                _ => throw new NotSupportedException($"Formát '{format}' není podporován.")
+            };
+        }
+    }
+}
